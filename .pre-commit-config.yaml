@@ -18,5 +18,5 @@ repos:
     rev: 0.9.6
     hooks:
       - id: uv-export
-        args: ["--no-hashes", "--output-file=src/requirements.txt"]
+        args: ["--no-hashes", "--output-file=requirements.txt"]
     
