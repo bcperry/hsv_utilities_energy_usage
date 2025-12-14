@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Minimal system deps for HA + pillow/jpeg
+sudo apt-get update && sudo apt-get install -y libturbojpeg0
+
+cd "$(dirname "$0")/.."
+
+# Ensure pip tooling is fresh
+python3 -m pip install --upgrade pip wheel setuptools
+
+# Install dev requirements (lint/nb/etc.)
+python3 -m pip install --requirement requirements.txt
+
+# Install Home Assistant locally so `hass` is available inside the container
+# Pin to a stable release to avoid surprise breakage; adjust as needed.
+python3 -m pip install "homeassistant==2024.12.4"
+
+# Install git hooks
+pre-commit install || true
+
+# Ensure a config dir exists for the dev HA instance and seed a default config
+mkdir -p config
+if [ ! -f config/configuration.yaml ]; then
+	cp .devcontainer/configuration.yaml config/configuration.yaml
+fi

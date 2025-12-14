@@ -1,0 +1,55 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Setup HSV Utilities Energy",
+        "description": "Enter your HSV Utilities SmartHub credentials to fetch energy data automatically.",
+        "data": {
+          "username": "Username/Email",
+          "password": "Password",
+          "service_location_number": "Service Location Number",
+          "account_number": "Account Number",
+          "data_path": "Data Storage Path (optional)",
+          "update_interval": "Update Interval (seconds)",
+          "fetch_days": "Days of Data to Fetch",
+          "utility_types": "Utility Types"
+        },
+        "data_description": {
+          "username": "Your HSV Utilities SmartHub username or email",
+          "password": "Your HSV Utilities SmartHub password",
+          "service_location_number": "Your service location number (found in SmartHub)",
+          "account_number": "Your account number (found in SmartHub)",
+          "data_path": "Where to store energy data (default: /config/energy_data)",
+          "update_interval": "How often to fetch new data (300-86400 seconds, default: 3600 = 1 hour)",
+          "fetch_days": "Number of days of historical data to fetch each time (1-30 days)",
+          "utility_types": "Select which utilities to monitor"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Authentication failed. Please check your username and password.",
+      "unknown": "Unexpected error occurred. Check logs for details."
+    },
+    "abort": {
+      "already_configured": "This integration is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Update Options",
+        "description": "Change integration settings",
+        "data": {
+          "update_interval": "Update Interval (seconds)",
+          "fetch_days": "Days of Data to Fetch",
+          "utility_types": "Utility Types"
+        },
+        "data_description": {
+          "update_interval": "How often to fetch new data (300-86400 seconds)",
+          "fetch_days": "Number of days of historical data to fetch each time (1-30 days)",
+          "utility_types": "Select which utilities to monitor"
+        }
+      }
+    }
+  }
+}

@@ -1,15 +1,121 @@
-# Energy Usage Data Retrieval & Analysis
+# Home Assistant Integration for HSV Utilities Energy (Unofficial)
 
-A Python application to retrieve and analyze energy usage data from HSV Utility SmartHub. Features OAuth2 authentication, Delta Lake storage with partitioning, and comprehensive Jupyter notebook visualizations.
+[![GitHub Release][releases-shield]][releases]
+[![GitHub Activity][commits-shield]][commits]
+
+An unofficial HSV Utilities integration for Home Assistant, installed through [HACS](https://hacs.xyz/docs/setup/download).
+
+This integration retrieves electricity and gas usage data from HSV Utility SmartHub and stores it in a Delta Lake data lake for historical analysis. It creates sensors in Home Assistant for real-time monitoring of your energy consumption and costs.
+
+## Requirements
+
+To use this integration, you'll need the following information:
+
+- HSV Utilities SmartHub Username
+- HSV Utilities SmartHub Password
+- Service Location Number
+- Account Number
+
+## Disclaimer
+
+This [Home Assistant](https://www.home-assistant.io/) integration is not affiliated, associated, nor sponsored by Huntsville Utilities or any related entities.
+
+Any use of this integration is at the sole discretion and risk of the user integrating it into their Home Assistant installation. The user takes full responsibility for protecting their local Home Assistant installation and credentials.
+
+This integration is provided as-is for personal energy monitoring and analysis purposes.
+
+## Installation
+
+1. Use [HACS](https://hacs.xyz/docs/setup/download). In HACS, go to `HACS > Integrations > 3 dots > Custom repositories` and add this GitHub repo `https://github.com/bcperry/hsv_utilities_energy_usage`. Set the category to "Integration". Now skip to step 7.
+2. If not using HACS, open the directory for your Home Assistant configuration (where you find `configuration.yaml`).
+3. If you do not have a `custom_components` directory there, create it.
+4. In the `custom_components` directory, create a new folder called `hsv_utilities_energy`.
+5. Download _all_ the files from the `custom_components/hsv_utilities_energy/` directory in this repository.
+6. Place the files you downloaded in the new directory you created.
+7. Restart Home Assistant.
+8. [![Add Integration][add-integration-badge]][add-integration] or in the Home Assistant UI go to "Configuration" -> "Integrations", click "+" and search for "HSV Utilities Energy".
+
+## Configuration
+
+The configuration flow will guide you through setup:
+
+1. **Username and Password (required)**
+   - Enter your HSV Utilities SmartHub login credentials.
+2. **Service Location Number (required)**
+   - Your service location identifier from your utility account.
+3. **Account Number (required)**
+   - Your utility account number.
+4. **Data Path (optional)**
+   - Where to store the Delta Lake data (default: `/config/energy_data`).
+5. **Update Interval (optional)**
+   - How often to fetch new data in seconds (default: 900 = 15 minutes).
+6. **Fetch Days (optional)**
+   - Number of days of historical data to fetch (default: 30).
+7. **Utility Types (optional)**
+   - Select which utilities to monitor: ELECTRIC, GAS (default: both).
+
+## Available Sensors
+
+For each configured utility type (ELECTRIC, GAS), the integration creates two sensors:
+
+| Sensor         | Description                              | Unit | State Class        |
+| -------------- | ---------------------------------------- | ---- | ------------------ |
+| Electric Usage | Last 24 hours of electricity consumption | kWh  | `total_increasing` |
+| Electric Cost  | Last 24 hours of electricity cost        | USD  | `total`            |
+| Gas Usage      | Last 24 hours of gas consumption         | CCF  | `total_increasing` |
+| Gas Cost       | Last 24 hours of gas cost                | USD  | `total`            |
+
+### Sensor Attributes
+
+Each sensor includes additional attributes:
+
+| Attribute        | Description                                       |
+| ---------------- | ------------------------------------------------- |
+| `today`          | Consumption/cost for today (calendar day)         |
+| `yesterday`      | Consumption/cost for yesterday                    |
+| `utility_type`   | ELECTRIC or GAS                                   |
+| `last_update`    | Timestamp of most recent data from utility        |
+| `data_lag_hours` | Hours since last data update (usage sensors only) |
+
+> **Note:** The utility data source has approximately a 2-hour lag. The main sensor state shows the last 24 hours of _available_ data to provide consistent readings despite this lag.
+
+## Services
+
+### `hsv_utilities_energy.import_statistics`
+
+Import historical data from the Delta Lake into Home Assistant's long-term statistics for use in the Energy Dashboard.
+
+| Parameter | Description              | Default |
+| --------- | ------------------------ | ------- |
+| `days`    | Number of days to import | 30      |
+
+## Data Storage
+
+This integration stores usage data in Delta Lake format, which provides:
+
+- **Efficient storage** with Parquet columnar format
+- **Deduplication** via merge/upsert operations
+- **Partitioning** by date, utility type, and data type
+- **Historical queries** for analysis and reporting
+
+Data is stored at the configured path (default: `/config/energy_data/usage/`).
+
+---
+
+# Energy Usage Data Retrieval & Analysis (Standalone)
+
+In addition to the Home Assistant integration, this repository includes a standalone Python application to retrieve and analyze energy usage data from HSV Utility SmartHub. Features OAuth2 authentication, Delta Lake storage with partitioning, and comprehensive Jupyter notebook visualizations.
 
 ## Setup
 
 1. **Install dependencies** (using uv):
+
    ```bash
    uv sync
    ```
 
 2. **Configure credentials**:
+
    ```bash
    cp .env.example .env
    # Edit .env and add your credentials:
@@ -65,6 +171,7 @@ jupyter notebook energy_analysis.ipynb
 ```
 
 The notebook includes:
+
 - Usage and cost time series visualizations
 - Daily/hourly pattern analysis
 - Heatmaps and peak usage identification
@@ -107,6 +214,7 @@ energy_usage/
 Partitioned by: `date`, `utility_type`, `data_type`
 
 Columns:
+
 - `timestamp_ms` - Unix timestamp in milliseconds
 - `datetime_utc` - Timestamp as datetime (UTC)
 - `date` - Date for partitioning
@@ -128,6 +236,7 @@ Unique key for merge: `(timestamp_ms, meter_number, utility_type, data_type)`
 The API returns two datasets for each utility:
 
 1. **USAGE** - Actual consumption values
+
    - Electric: KWH (kilowatt-hours)
    - Gas: FT3 (cubic feet)
    - Water: GAL (gallons)
@@ -139,6 +248,7 @@ The API returns two datasets for each utility:
 Both datasets are stored separately in Delta Lake for flexible analysis.
 
 Example query:
+
 ```python
 from delta_storage import EnergyDeltaStorage
 
@@ -164,11 +274,13 @@ cost_df = storage.read_usage_data(
 ## Examples
 
 ### Check Stats
+
 ```bash
 uv run python -c "from delta_storage import EnergyDeltaStorage; print(EnergyDeltaStorage().get_stats())"
 ```
 
 ### Query Specific Date
+
 ```python
 from delta_storage import EnergyDeltaStorage
 from datetime import date
@@ -182,6 +294,7 @@ print(f"Nov 28 usage: {nov28['usage_value'].sum():.2f} KWH")
 ## Security Notes
 
 ⚠️ **Never commit your `.env` file to version control**
+
 - The `.env` file is included in `.gitignore`
 - Contains sensitive credentials and account numbers
 - Use `.env.example` as a template
@@ -189,6 +302,7 @@ print(f"Nov 28 usage: {nov28['usage_value'].sum():.2f} KWH")
 ## Dependencies
 
 Core libraries:
+
 - `requests` - HTTP client for API calls
 - `python-dotenv` - Environment variable management
 - `deltalake` - Delta Lake storage (includes pandas, pyarrow)
@@ -197,9 +311,17 @@ Core libraries:
 - `jupyter`, `ipykernel` - Notebook support
 
 Development:
+
 - `uv` - Package manager
 - `pre-commit` - Git hooks for code quality
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+## MIT License - see [LICENSE](LICENSE) file for details.
+
+[commits-shield]: https://img.shields.io/github/commit-activity/w/bcperry/hsv_utilities_energy_usage?style=flat-square
+[commits]: https://github.com/bcperry/hsv_utilities_energy_usage/commits/master
+[releases-shield]: https://img.shields.io/github/release/bcperry/hsv_utilities_energy_usage.svg?style=flat-square
+[releases]: https://github.com/bcperry/hsv_utilities_energy_usage/releases
+[add-integration]: https://my.home-assistant.io/redirect/config_flow_start?domain=hsv_utilities_energy
+[add-integration-badge]: https://my.home-assistant.io/badges/config_flow_start.svg

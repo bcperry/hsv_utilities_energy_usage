@@ -5,6 +5,7 @@ build/
 dist/
 wheels/
 *.egg-info
+.ruff_cache/
 
 # Virtual environments
 .venv
@@ -14,3 +15,6 @@ wheels/
 
 # data
 energy_data/
+
+# hass testing
+config/
