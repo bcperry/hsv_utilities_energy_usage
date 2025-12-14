@@ -149,10 +149,10 @@ class HSVUtilitiesEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(
-        config_entry: config_entries.OptionsFlowWithConfigEntry,
+        config_entry: config_entries.ConfigEntry,
     ) -> HSVUtilitiesEnergyOptionsFlow:
         """Get the options flow for this handler."""
-        return HSVUtilitiesEnergyOptionsFlow()
+        return HSVUtilitiesEnergyOptionsFlow(config_entry)
 
 
 class HSVUtilitiesEnergyOptionsFlow(config_entries.OptionsFlowWithConfigEntry):
