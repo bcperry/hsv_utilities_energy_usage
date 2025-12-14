@@ -2,19 +2,16 @@
   "domain": "hsv_utilities_energy",
   "name": "HSV Utilities Energy",
   "codeowners": [
-    "@yourgithub"
+    "@bcperry"
   ],
   "config_flow": true,
   "dependencies": [
     "recorder"
   ],
-  "documentation": "https://github.com/yourusername/hsv-utilities-energy-integration",
+  "documentation": "https://github.com/bcperry/hsv-utilities-energy-integration",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/yourusername/hsv-utilities-energy-integration/issues",
-  "requirements": [
-    "deltalake==1.2.1",
-    "pandas==2.2.3"
-  ],
-  "version": "0.1.0"
+  "issue_tracker": "https://github.com/bcperry/hsv-utilities-energy-integration/issues",
+  "requirements": [],
+  "version": "0.2.0"
 }

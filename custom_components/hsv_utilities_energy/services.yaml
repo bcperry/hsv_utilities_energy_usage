@@ -1,15 +1,4 @@
-import_statistics:
-  name: Import Historical Statistics
-  description: Import historical energy data from Delta Lake storage into Home Assistant long-term statistics for graphing.
-  fields:
-    days:
-      name: Days
-      description: Number of days of historical data to import (default 30).
-      required: false
-      default: 30
-      example: 30
-      selector:
-        number:
-          min: 1
-          max: 365
-          mode: box
+refresh_data:
+  name: Refresh Data
+  description: Manually trigger a data refresh from the HSV Utilities API.
+  fields: {}

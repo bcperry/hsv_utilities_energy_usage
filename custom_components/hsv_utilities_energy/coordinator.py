@@ -6,6 +6,9 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any
 
+from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
+from homeassistant.components.recorder.statistics import async_add_external_statistics
+from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -16,6 +19,7 @@ from .const import (
     DOMAIN,
     UTILITY_TYPE_ELECTRIC,
 )
+from .delta_storage import EnergyDataCache
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,6 +38,7 @@ class EnergyDataCoordinator(DataUpdateCoordinator):
         update_interval: timedelta,
         fetch_days: int,
         utility_types: list[str],
+        entry_id: str,
     ) -> None:
         """Initialize the coordinator."""
         super().__init__(
@@ -46,26 +51,16 @@ class EnergyDataCoordinator(DataUpdateCoordinator):
         self.password = password
         self.service_location_number = service_location_number
         self.account_number = account_number
-        # Resolve data path relative to Home Assistant config directory
-        if not data_path:
-            self.data_path = hass.config.path("energy_data")
-        else:
-            # Normalize common absolute /config paths to HA's config dir
-            if data_path.startswith("/config/"):
-                rel = data_path[len("/config/") :]
-                self.data_path = hass.config.path(rel)
-            elif data_path == "/config":
-                self.data_path = hass.config.path("")
-            else:
-                # Treat as relative to HA config directory
-                self.data_path = hass.config.path(data_path)
+        self.data_path = data_path  # Kept for compatibility, not used
         self.fetch_days = fetch_days
         self.utility_types = utility_types
-        self._storage = None
+        self.entry_id = entry_id
+        # In-memory cache for recent data
+        self._cache = EnergyDataCache()
         self._api_client = None
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Fetch data from HSV Utilities API, store in Delta Lake, then read aggregated data.
+        """Fetch data from HSV Utilities API and store in HA statistics.
 
         Returns a dictionary with aggregated daily usage and cost for each utility type.
         Structure:
@@ -78,15 +73,14 @@ class EnergyDataCoordinator(DataUpdateCoordinator):
         }
         """
         try:
-            # Step 1: Fetch data from API
+            # Step 1: Fetch data from API and store in cache
             await self._fetch_and_store_data()
 
-            # Step 2: Read aggregated data from Delta Lake
-            from .delta_storage import EnergyDeltaStorage
+            # Step 2: Import data to HA statistics
+            await self._import_to_statistics()
 
-            return await self.hass.async_add_executor_job(
-                self._read_aggregated_data, EnergyDeltaStorage
-            )
+            # Step 3: Return aggregated data from cache
+            return self._read_aggregated_data()
 
         except Exception as err:
             _LOGGER.exception("Error fetching energy data: %s", err)
@@ -146,22 +140,15 @@ class EnergyDataCoordinator(DataUpdateCoordinator):
                 _LOGGER.warning("No usage data received for %s", utility_type)
                 return
 
-            # Store usage data in Delta Lake (run in executor)
-            await self.hass.async_add_executor_job(
-                self._store_data_sync, utility_type, usage_data
-            )
+            # Store usage data in cache
+            self._store_data_sync(utility_type, usage_data)
 
         except Exception as err:
             _LOGGER.warning("Error fetching %s data: %s", utility_type, err)
 
     def _store_data_sync(self, utility_type: str, api_data: dict) -> None:
-        """Store API data in Delta Lake (runs in executor)."""
+        """Store API data in the in-memory cache."""
         try:
-            from .delta_storage import EnergyDeltaStorage
-
-            if self._storage is None:
-                self._storage = EnergyDeltaStorage(self.data_path)
-
             # Parse API response using SmartHub dataset structure (matches main.py)
             data_section = api_data.get("data", {})
             industry_datasets = data_section.get(utility_type, [])
@@ -190,9 +177,8 @@ class EnergyDataCoordinator(DataUpdateCoordinator):
                         else DATA_TYPE_COST
                     )
 
-                    # Pass raw unit_of_measure from API (matches main.py behavior)
-                    # Unit normalization for display happens in sensor.py
-                    records_written = self._storage.save_usage_data(
+                    # Store in cache
+                    records_written = self._cache.save_usage_data(
                         data=data_points,
                         meter_number=meter_number,
                         service_location_number=self.service_location_number,
@@ -203,7 +189,7 @@ class EnergyDataCoordinator(DataUpdateCoordinator):
                         data_type=save_type,
                     )
                     _LOGGER.debug(
-                        "Stored %d %s %s records for meter %s",
+                        "Cached %d %s %s records for meter %s",
                         records_written,
                         utility_type,
                         save_type.lower(),
@@ -213,130 +199,129 @@ class EnergyDataCoordinator(DataUpdateCoordinator):
         except Exception as err:
             _LOGGER.exception("Error storing %s data: %s", utility_type, err)
 
-    def _read_aggregated_data(self, storage_class) -> dict[str, Any]:
-        """Read and aggregate data from Delta Lake (runs in executor).
+    async def _import_to_statistics(self) -> None:
+        """Import cached data to Home Assistant statistics."""
+        for utility_type in self.utility_types:
+            # Import usage statistics
+            await self._import_utility_statistics(
+                utility_type=utility_type,
+                data_type=DATA_TYPE_USAGE,
+            )
+
+            # Import cost statistics
+            await self._import_utility_statistics(
+                utility_type=utility_type,
+                data_type=DATA_TYPE_COST,
+            )
+
+    async def _import_utility_statistics(
+        self,
+        utility_type: str,
+        data_type: str,
+    ) -> None:
+        """Import statistics for a single utility type and data type."""
+        hourly_data = self._cache.get_hourly_data_for_statistics(
+            utility_type=utility_type,
+            data_type=data_type,
+        )
+
+        if not hourly_data:
+            _LOGGER.debug(
+                "No %s %s data to import to statistics", utility_type, data_type
+            )
+            return
+
+        # Create statistic ID (external statistics use domain:id format)
+        stat_suffix = "usage" if data_type == DATA_TYPE_USAGE else "cost"
+        statistic_id = f"{DOMAIN}:{utility_type.lower()}_{stat_suffix}"
+
+        # Determine unit
+        if data_type == DATA_TYPE_USAGE:
+            if utility_type == UTILITY_TYPE_ELECTRIC:
+                unit = UnitOfEnergy.KILO_WATT_HOUR
+            else:
+                # Gas/Water - get unit from cache
+                records = self._cache.read_usage_data(
+                    utility_type=utility_type, data_type=data_type
+                )
+                unit = records[0]["unit_of_measure"] if records else "CCF"
+        else:
+            unit = "USD"
+
+        # Create metadata
+        metadata = StatisticMetaData(
+            has_mean=False,
+            has_sum=True,
+            name=f"{utility_type.capitalize()} {data_type.capitalize()}",
+            source=DOMAIN,
+            statistic_id=statistic_id,
+            unit_of_measurement=unit,
+        )
+
+        # Create hourly statistics with cumulative sum
+        statistics: list[StatisticData] = []
+        cumulative_sum = 0.0
+
+        for hourly in hourly_data:
+            cumulative_sum += hourly["value"]
+            statistics.append(
+                StatisticData(
+                    start=hourly["hour_start"],
+                    sum=cumulative_sum,
+                    state=hourly["value"],
+                )
+            )
+
+        if statistics:
+            _LOGGER.debug(
+                "Importing %d hourly %s %s statistics",
+                len(statistics),
+                utility_type,
+                data_type,
+            )
+            async_add_external_statistics(self.hass, metadata, statistics)
+
+    def _read_aggregated_data(self) -> dict[str, Any]:
+        """Read and aggregate data from cache.
 
         Note: The data source has a ~2 hour lag but reports at 15-minute intervals.
         We calculate usage based on the most recent available data.
         """
-        if self._storage is None:
-            self._storage = storage_class(self.data_path)
-
         data = {}
-        now = datetime.now()
-        today = now.date()
-        yesterday = today - timedelta(days=1)
-        # Fetch 3 days to ensure we have data despite the 2-hour lag
-        three_days_ago = today - timedelta(days=3)
 
         for utility_type in self.utility_types:
             utility_data = {"usage": {}, "cost": {}}
 
-            # Fetch usage data
+            # Get usage data from cache
             try:
-                usage_df = self._storage.read_usage_data(
+                usage_agg = self._cache.get_aggregated_data(
                     utility_type=utility_type,
                     data_type=DATA_TYPE_USAGE,
-                    start_date=str(three_days_ago),
-                    end_date=str(today),
                 )
-
-                if not usage_df.empty:
-                    # Sort by datetime to get most recent
-                    usage_df = usage_df.sort_values("datetime_utc")
-
-                    # Get the most recent data timestamp
-                    latest_timestamp = usage_df["datetime_utc"].max()
-
-                    # Calculate "last 24 hours" from most recent data point
-                    last_24h_start = latest_timestamp - timedelta(hours=24)
-                    last_24h_df = usage_df[usage_df["datetime_utc"] > last_24h_start]
-                    last_24h_total = last_24h_df["usage_value"].sum()
-
-                    # Group by date for daily totals
-                    daily_usage = (
-                        usage_df.groupby("date")["usage_value"].sum().to_dict()
-                    )
-
-                    utility_data["usage"] = {
-                        "last_24h": round(last_24h_total, 2),
-                        "today": round(daily_usage.get(today, 0.0), 2),
-                        "yesterday": round(daily_usage.get(yesterday, 0.0), 2),
-                        "unit": usage_df["unit_of_measure"].iloc[0],
-                        "last_update": latest_timestamp.isoformat(),
-                        "data_lag_hours": round(
-                            (
-                                now
-                                - latest_timestamp.to_pydatetime().replace(tzinfo=None)
-                            ).total_seconds()
-                            / 3600,
-                            1,
-                        ),
-                    }
-                else:
-                    # No data available
-                    unit = "kWh" if utility_type == UTILITY_TYPE_ELECTRIC else "CCF"
-                    utility_data["usage"] = {
-                        "last_24h": 0.0,
-                        "today": 0.0,
-                        "yesterday": 0.0,
-                        "unit": unit,
-                        "last_update": None,
-                        "data_lag_hours": None,
-                    }
-
+                utility_data["usage"] = usage_agg
             except Exception as err:
                 _LOGGER.warning(
                     "Could not fetch usage data for %s: %s", utility_type, err
                 )
+                unit = "KWH" if utility_type == UTILITY_TYPE_ELECTRIC else "CCF"
                 utility_data["usage"] = {
                     "last_24h": 0.0,
                     "today": 0.0,
                     "yesterday": 0.0,
-                    "unit": "unknown",
+                    "unit": unit,
                     "last_update": None,
                     "data_lag_hours": None,
                 }
 
-            # Fetch cost data
+            # Get cost data from cache
             try:
-                cost_df = self._storage.read_usage_data(
+                cost_agg = self._cache.get_aggregated_data(
                     utility_type=utility_type,
                     data_type=DATA_TYPE_COST,
-                    start_date=str(three_days_ago),
-                    end_date=str(today),
                 )
-
-                if not cost_df.empty:
-                    # Sort by datetime to get most recent
-                    cost_df = cost_df.sort_values("datetime_utc")
-
-                    # Get the most recent data timestamp
-                    latest_timestamp = cost_df["datetime_utc"].max()
-
-                    # Calculate "last 24 hours" from most recent data point
-                    last_24h_start = latest_timestamp - timedelta(hours=24)
-                    last_24h_df = cost_df[cost_df["datetime_utc"] > last_24h_start]
-                    last_24h_total = last_24h_df["usage_value"].sum()
-
-                    daily_cost = cost_df.groupby("date")["usage_value"].sum().to_dict()
-
-                    utility_data["cost"] = {
-                        "last_24h": round(last_24h_total, 2),
-                        "today": round(daily_cost.get(today, 0.0), 2),
-                        "yesterday": round(daily_cost.get(yesterday, 0.0), 2),
-                        "unit": "USD",
-                        "last_update": latest_timestamp.isoformat(),
-                    }
-                else:
-                    utility_data["cost"] = {
-                        "last_24h": 0.0,
-                        "today": 0.0,
-                        "yesterday": 0.0,
-                        "unit": "USD",
-                        "last_update": None,
-                    }
-
+                # Override unit for cost
+                cost_agg["unit"] = "USD"
+                utility_data["cost"] = cost_agg
             except Exception as err:
                 _LOGGER.warning(
                     "Could not fetch cost data for %s: %s", utility_type, err
