@@ -2,3 +2,8 @@ refresh_data:
   name: Refresh Data
   description: Manually trigger a data refresh from the HSV Utilities API.
   fields: {}
+
+clear_statistics:
+  name: Clear Statistics
+  description: Clear all energy statistics and rebuild them from scratch. Use this if your graphs look incorrect or have gaps.
+  fields: {}

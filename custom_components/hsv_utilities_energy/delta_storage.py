@@ -8,6 +8,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
+
+# HSV Utilities API returns timestamps in Central Time (America/Chicago)
+# but encoded as if they were UTC. We need to interpret them correctly.
+HSV_TIMEZONE = ZoneInfo("America/Chicago")
 
 
 class EnergyDataCache:
@@ -72,8 +77,14 @@ class EnergyDataCache:
             timestamp_ms = point["x"]
             usage_value = point["y"]
 
-            # Convert milliseconds to datetime
-            dt = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+            # The API returns timestamps as local Central Time, but encoded as if UTC.
+            # We interpret the timestamp as UTC first, then treat that wall-clock time
+            # as Central Time and convert to actual UTC.
+            naive_dt = datetime.utcfromtimestamp(timestamp_ms / 1000)
+            # Treat this naive datetime as Central Time
+            local_dt = naive_dt.replace(tzinfo=HSV_TIMEZONE)
+            # Convert to proper UTC
+            dt = local_dt.astimezone(timezone.utc)
 
             records.append(
                 {
@@ -256,15 +267,33 @@ class EnergyDataCache:
 
         Returns list of dicts with 'hour_start' (datetime) and 'value' (float).
         """
+        import logging
+        _LOGGER = logging.getLogger(__name__)
+        
         records = self.read_usage_data(utility_type=utility_type, data_type=data_type)
 
         if not records:
+            _LOGGER.info("No records in cache for %s %s", utility_type, data_type)
             return []
 
+        # Log the time range of data in cache
+        first_record = records[0]
+        last_record = records[-1]
+        _LOGGER.info(
+            "Cache has %d %s %s records from %s to %s",
+            len(records),
+            utility_type,
+            data_type,
+            first_record["datetime_utc"],
+            last_record["datetime_utc"],
+        )
+
         # Group by hour
+        # HA expects timezone-aware UTC datetimes for external statistics
         hourly: dict[datetime, float] = {}
         for record in records:
             dt = record["datetime_utc"]
+            # Keep timezone-aware UTC datetime
             hour_start = dt.replace(minute=0, second=0, microsecond=0)
             if hour_start not in hourly:
                 hourly[hour_start] = 0.0
@@ -275,6 +304,14 @@ class EnergyDataCache:
             {"hour_start": hour, "value": value}
             for hour, value in sorted(hourly.items())
         ]
+        
+        if result:
+            _LOGGER.info(
+                "Hourly aggregation: %d hours from %s to %s",
+                len(result),
+                result[0]["hour_start"],
+                result[-1]["hour_start"],
+            )
 
         return result
 

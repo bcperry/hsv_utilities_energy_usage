@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
-from homeassistant.components.recorder.statistics import async_add_external_statistics
+from homeassistant.components.recorder.statistics import (
+    async_add_external_statistics,
+    get_last_statistics,
+)
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -58,6 +62,27 @@ class EnergyDataCoordinator(DataUpdateCoordinator):
         # In-memory cache for recent data
         self._cache = EnergyDataCache()
         self._api_client = None
+        # Flag to force rebuild of statistics (ignores existing stats)
+        self._force_rebuild = False
+
+    async def async_clear_statistics(self) -> None:
+        """Clear all statistics for this integration and force rebuild.
+        
+        Note: We cannot directly clear statistics due to HA recorder thread restrictions.
+        Instead, we force a rebuild which will overwrite existing statistics.
+        """
+        _LOGGER.info("Rebuilding all HSV Utilities Energy statistics from scratch")
+        
+        # Clear the in-memory cache
+        self._cache = EnergyDataCache()
+        
+        # Set flag to force rebuild (ignores existing statistics)
+        self._force_rebuild = True
+        
+        # Trigger a refresh to rebuild statistics
+        await self.async_request_refresh()
+        
+        _LOGGER.info("Statistics rebuild complete")
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from HSV Utilities API and store in HA statistics.
@@ -90,18 +115,19 @@ class EnergyDataCoordinator(DataUpdateCoordinator):
         """Fetch data from API and store in Delta Lake."""
         try:
             # Calculate time range (fetch last N days)
-            end_time = datetime.now()
+            # Use UTC to match main.py and API expectations
+            end_time = datetime.now(tz=timezone.utc)
             start_time = end_time - timedelta(days=self.fetch_days)
 
             # Convert to milliseconds since epoch
             start_ms = int(start_time.timestamp() * 1000)
             end_ms = int(end_time.timestamp() * 1000)
 
-            _LOGGER.debug(
-                "Fetching data from %s to %s (%d days)",
+            _LOGGER.info(
+                "Fetching data from %s to %s (end_ms=%d)",
                 start_time,
                 end_time,
-                self.fetch_days,
+                end_ms,
             )
 
             # Initialize API client
@@ -213,6 +239,9 @@ class EnergyDataCoordinator(DataUpdateCoordinator):
                 utility_type=utility_type,
                 data_type=DATA_TYPE_COST,
             )
+        
+        # Reset force rebuild flag after import
+        self._force_rebuild = False
 
     async def _import_utility_statistics(
         self,
@@ -226,7 +255,7 @@ class EnergyDataCoordinator(DataUpdateCoordinator):
         )
 
         if not hourly_data:
-            _LOGGER.debug(
+            _LOGGER.info(
                 "No %s %s data to import to statistics", utility_type, data_type
             )
             return
@@ -258,28 +287,87 @@ class EnergyDataCoordinator(DataUpdateCoordinator):
             unit_of_measurement=unit,
         )
 
-        # Create hourly statistics with cumulative sum
+        # Determine if we should rebuild from scratch or continue from last stat
+        last_stat_time = None
+        last_stat_sum = 0.0
+        last_stat_state = 0.0
+        
+        if not self._force_rebuild:
+            # Get the last known statistics to continue the cumulative sum
+            last_stats = await get_instance(self.hass).async_add_executor_job(
+                get_last_statistics, self.hass, 1, statistic_id, True, {"sum", "state"}
+            )
+
+            if last_stats and statistic_id in last_stats:
+                last_stat = last_stats[statistic_id][0]
+                last_stat_sum = last_stat.get("sum") or 0.0
+                last_stat_state = last_stat.get("state") or 0.0
+                last_stat_time = last_stat.get("start")
+                if last_stat_time:
+                    # Convert to datetime if it's a timestamp
+                    if isinstance(last_stat_time, (int, float)):
+                        from datetime import timezone
+                        last_stat_time = datetime.fromtimestamp(last_stat_time, tz=timezone.utc)
+                    _LOGGER.info(
+                        "Last %s %s stat: sum=%.2f state=%.2f at %s",
+                        utility_type,
+                        data_type,
+                        last_stat_sum,
+                        last_stat_state,
+                        last_stat_time,
+                    )
+                else:
+                    last_stat_time = None
+        
+        if last_stat_time is None:
+            _LOGGER.info(
+                "Building %s %s statistics from scratch (%d hourly records)",
+                utility_type,
+                data_type,
+                len(hourly_data),
+            )
+
+        # Create hourly statistics
+        # Start cumulative sum from the sum BEFORE the last recorded hour
+        # (so we can re-import the last hour with updated data)
+        cumulative_sum = last_stat_sum - last_stat_state if last_stat_time else 0.0
         statistics: list[StatisticData] = []
-        cumulative_sum = 0.0
+        
+        # Ensure last_stat_time is timezone-aware UTC for comparison
+        if last_stat_time and last_stat_time.tzinfo is None:
+            last_stat_time = last_stat_time.replace(tzinfo=timezone.utc)
 
         for hourly in hourly_data:
+            hour_start = hourly["hour_start"]
+            # Skip hours that are BEFORE the last recorded stat (strictly less than)
+            # This allows us to re-import the last hour with updated values
+            if last_stat_time and hour_start < last_stat_time:
+                continue
             cumulative_sum += hourly["value"]
             statistics.append(
                 StatisticData(
-                    start=hourly["hour_start"],
+                    start=hour_start,
                     sum=cumulative_sum,
                     state=hourly["value"],
                 )
             )
 
         if statistics:
-            _LOGGER.debug(
-                "Importing %d hourly %s %s statistics",
+            _LOGGER.info(
+                "Importing %d hourly %s %s statistics (sum=%.2f)",
                 len(statistics),
                 utility_type,
                 data_type,
+                cumulative_sum,
             )
             async_add_external_statistics(self.hass, metadata, statistics)
+        else:
+            _LOGGER.info(
+                "No new %s %s statistics to import (all %d records already recorded)",
+                utility_type,
+                data_type,
+                len(hourly_data),
+            )
 
     def _read_aggregated_data(self) -> dict[str, Any]:
         """Read and aggregate data from cache.

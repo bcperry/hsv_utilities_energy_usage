@@ -30,8 +30,10 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 SERVICE_REFRESH_DATA = "refresh_data"
+SERVICE_CLEAR_STATISTICS = "clear_statistics"
 
 SERVICE_REFRESH_DATA_SCHEMA = vol.Schema({})
+SERVICE_CLEAR_STATISTICS_SCHEMA = vol.Schema({})
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -77,12 +79,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.info("Manual data refresh requested")
         await coordinator.async_request_refresh()
 
+    # Register service to clear and rebuild statistics
+    async def async_clear_statistics(call: ServiceCall) -> None:
+        """Clear all statistics and rebuild from scratch."""
+        _LOGGER.info("Clear statistics requested")
+        await coordinator.async_clear_statistics()
+
     if not hass.services.has_service(DOMAIN, SERVICE_REFRESH_DATA):
         hass.services.async_register(
             DOMAIN,
             SERVICE_REFRESH_DATA,
             async_refresh_data,
             schema=SERVICE_REFRESH_DATA_SCHEMA,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_CLEAR_STATISTICS):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_CLEAR_STATISTICS,
+            async_clear_statistics,
+            schema=SERVICE_CLEAR_STATISTICS_SCHEMA,
         )
 
     # Forward setup to sensor platform
